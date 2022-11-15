@@ -5,14 +5,16 @@ from collections import OrderedDict
 import json
 import numpy as np
 
-architecture = {
+architectures = {
   'alexnet': models.alexnet,
+  'vgg13': models.vgg13,
   'vgg16': models.vgg16,
   'densenet121': models.densenet121,
 }
 
 input_units = {
   'alexnet': 9216,
+  'vgg13': 25088,
   'vgg16': 25088,
   'densenet121': 1024,
 }
@@ -22,13 +24,13 @@ def create_model(arch, hidden_layers):
 
     Args:
       arch: name of pretrained architecture from pytorch
-      hidden_layers: array of hidden layer
+      hidden_layers: array of hidden layers
 
     Returns:
       model: the pretrainded model for the given architecture
     """
     
-    model = architecture.get(arch, 'vgg13')(pretrained=True)
+    model = architectures.get(arch, 'alexnet')(pretrained=True)
 
     for param in model.parameters():
       param.requires_grad = False
@@ -57,7 +59,6 @@ def create_model(arch, hidden_layers):
 
     return model
 
-
 def get_loader(dir, transform, shuffle=False):
   # Load the datasets with ImageFolder
   dataset = datasets.ImageFolder(dir, transform=transform)
@@ -65,7 +66,6 @@ def get_loader(dir, transform, shuffle=False):
   dataloader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=shuffle)
 
   return dataloader, dataset.class_to_idx
-
 
 def load_datasets(data_dir):
   """Load the datasets from a given directory path.
@@ -101,157 +101,11 @@ def load_datasets(data_dir):
 
   return dataloaders, class_to_idx
 
-
 def select_device(is_gpu):
   """Select device on which trained is going to performed. 
   """
 
   return torch.device("cuda:0" if is_gpu and torch.cuda.is_available() else "cpu")
-
-
-def train(dataloaders, model, epochs, device, lr=0.003):
-  """Performing the validation for the NN model.
-
-  Args:
-    dataloader: pytorch dataloader for loading the data batches
-    model: the NN model
-    epochs: number of times training  is going to performed
-    device: device on which validation performed (either CPU or GPU)
-    lr: learning rate
-
-  Returns:
-    accuracy: accuracy of the model after training
-  """
-
-  train_losses, valid_losses = [], []
-
-  criterion = nn.NLLLoss()
-  optimizer = optim.Adam(model.classifier.parameters(), lr)
-  
-  model.to(device)
-  for epoch in range(epochs):
-    model, running_loss =  train_network(dataloaders['train'], model, criterion, optimizer, device)
-    valid_loss, accuracy = validate(dataloaders['valid'], model, criterion, device)
-    
-    train_losses.append(running_loss/len(dataloaders['train']))
-    valid_losses.append(valid_loss/len(dataloaders['valid']))
-
-    print("Epoch:               {}/{}.. ".format(epoch+1, epochs),
-          "Training Loss:       {:.3f}.. ".format(running_loss/len(dataloaders['train'])),
-          "Validation Loss:     {:.3f}.. ".format(valid_loss/len(dataloaders['valid'])),
-          "Validation Accuracy: {:.3f}".format(accuracy/len(dataloaders['valid'])))
-
-  # Perform final test
-  test_loss, accuracy = validate(dataloaders['test'], model, criterion, device)
-
-  return accuracy
-
-def validate(dataloader, model, criterion, device):
-  """Performing the validation for the trained model.
-
-  Args:
-    dataloader: pytorch dataloader for loading the data batches
-    model: the NN model
-    criterion: Loss Function
-    device: device on which validation performed (either CPU or GPU)
-
-  Returns:
-    loss: the total loss during validation
-    accuracy: accuracy of the model
-  """
-  
-  accuracy = 0
-  loss = 0
-  with torch.no_grad():
-    model.eval()
-    for images, labels in dataloader:
-      images, labels = images.to(device), labels.to(device)
-      logps = model(images)
-      loss += criterion(logps, labels).item()
-
-      ps = torch.exp(logps)
-      top_p, top_class = ps.topk(1, dim=1)
-      equals = top_class == labels.view(*top_class.shape)
-      accuracy += torch.mean(equals.type(torch.FloatTensor)).item()
-
-  return loss, accuracy
-
-
-def save_checkpoint(filepath, model):
-  """Save the model to given location
-
-  Args:
-    filepath: path where the model is going to saved
-    model: the pretrained model
-
-  Returns:
-    None
-  """
-  
-  checkpoint = {
-    'arch': model.architecture,
-    'hidden_layers': model.hidden_layers,
-    'classifier': model.classifier,
-    'state_dict': model.state_dict(),
-    'mapping': model.class_to_idx
-  }
-
-  torch.save(checkpoint, filepath)
-
-
-# Load a checkpoint and rebuilds the model
-def load_checkpoint(filepath):
-  """Load a checkpoint from a given location and rebuilds the model
-
-  Args: 
-    filepath: path where the model is saved
-
-  Returns:
-    model: the pretrainded model
-  """
-
-  checkpoint = torch.load(filepath, map_location='cpu')
-
-  model = create_model(checkpoint['arch'], checkpoint['hidden_layers'])
-  
-  model.classifier = checkpoint['classifier']
-  model.load_state_dict(checkpoint['state_dict'])
-  model.class_to_idx = checkpoint['mapping']
-  
-  return model
-
-def predict(image, model, topk=5):
-  """Predict the class (or classes) of an image using a trained deep learning model.
-
-  Args:
-    image: image tensor
-    model: the NN model used for prediction
-    topk: number of classes or predictions
-
-  Returns:
-    top_ps: top probabilities
-    top_classes: top classes or predictions
-  """
-
-  img_tensor = torch.from_numpy(image).type(torch.FloatTensor)
-  img_tensor = img_tensor.unsqueeze(dim=0)
-
-
-  with torch.no_grad():
-    ps = model.forward(img_tensor)
-    probs = np.exp(ps)
-
-    top_ps, top_classes = probs.topk(topk, dim=1)
-    top_ps = top_ps.numpy().tolist()[0]
-    top_classes = top_classes.numpy().tolist()[0]
-
-    idx_to_class = {model.class_to_idx[k]: k for k in model.class_to_idx}
-    top_classes = [idx_to_class[x] for x in top_classes]
-
-    return top_ps, top_classes
-
-# HELPER
-# ------------
 
 def train_network(dataloader, model, criterion, optimizer, device):
   """Train the model using the given loss function and optimizer
@@ -283,3 +137,148 @@ def train_network(dataloader, model, criterion, optimizer, device):
     running_loss += loss.item()
 
   return model, running_loss
+
+def train(dataloaders, model, epochs, device, lr=0.003):
+  """Performing the validation for the NN model.
+
+  Args:
+    dataloader: pytorch dataloader for loading the data batches
+    model: the NN model
+    epochs: number of times training  is going to performed
+    device: device on which validation performed (either CPU or GPU)
+    lr: learning rate 
+
+  Returns:
+    accuracy: accuracy of the model after training
+  """
+
+  train_losses, valid_losses = [], []
+
+  criterion = nn.NLLLoss()
+  optimizer = optim.Adam(model.classifier.parameters(), lr)
+  
+  model.to(device)
+  for epoch in range(epochs):
+    model, running_loss =  train_network(dataloaders['train'], model, criterion, optimizer, device)
+    valid_loss, accuracy = validate(dataloaders['valid'], model, criterion, device)
+    
+    train_losses.append(running_loss/len(dataloaders['train']))
+    valid_losses.append(valid_loss/len(dataloaders['valid']))
+
+    print("Epoch:               {}/{}.. ".format(epoch+1, epochs),
+          "Training Loss:       {:.3f}.. ".format(running_loss/len(dataloaders['train'])),
+          "Validation Loss:     {:.3f}.. ".format(valid_loss/len(dataloaders['valid'])),
+          "Validation Accuracy: {:.3f}".format(accuracy/len(dataloaders['valid'])))
+
+  # Perform final test
+  test_loss, accuracy = validate(dataloaders['test'], model, criterion, device)
+  
+  print("\nFinal Test Results:-")
+  print("Test Loss:            {:.3f}.. ".format(test_loss/len(dataloaders['test'])),
+        "Test Accuracy:        {:.3f}".format(accuracy/len(dataloaders['test'])))
+
+  return model, accuracy
+
+def validate(dataloader, model, criterion, device):
+  """Performing the validation for the trained model.
+
+  Args:
+    dataloader: pytorch dataloader for loading the data batches
+    model: the NN model
+    criterion: Loss Function
+    device: device on which validation performed (either CPU or GPU)
+
+  Returns:
+    loss: the total loss during validation
+    accuracy: accuracy of the model
+  """
+  
+  accuracy = 0
+  loss = 0
+  with torch.no_grad():
+    model.eval()
+    for images, labels in dataloader:
+      images, labels = images.to(device), labels.to(device)
+      logps = model(images)
+      loss += criterion(logps, labels).item()
+
+      ps = torch.exp(logps)
+      top_p, top_class = ps.topk(1, dim=1)
+      equals = top_class == labels.view(*top_class.shape)
+      accuracy += torch.mean(equals.type(torch.FloatTensor)).item()
+
+  return loss, accuracy
+
+def save_checkpoint(filepath, model):
+  """Save the model to given location
+
+  Args:
+    filepath: filepath where to save the model
+    model: the pretrained model you want to save
+
+  Returns:
+    None
+  """
+  
+  checkpoint = {
+    'arch': model.architecture,
+    'hidden_layers': model.hidden_layers,
+    'classifier': model.classifier,
+    'state_dict': model.state_dict(),
+    'mapping': model.class_to_idx
+  }
+
+  torch.save(checkpoint, filepath)
+
+def load_checkpoint(filepath):
+  """Load a checkpoint from a given location and rebuilds the model
+
+  Args: 
+    filepath: path to the saved model file
+
+  Returns:
+    model: the saved model
+  """
+
+  checkpoint = torch.load(filepath, map_location='cpu')
+
+  model = create_model(checkpoint['arch'], checkpoint['hidden_layers'])
+  
+  model.classifier = checkpoint['classifier']
+  model.load_state_dict(checkpoint['state_dict'])
+  model.class_to_idx = checkpoint['mapping']
+  
+  return model
+
+def predict(image, model, topk=5, device='cpu'):
+  """Predict the class (or classes) of an image using a trained deep learning model.
+
+  Args:
+    image: path to image file
+    model: the NN model used for prediction
+    topk: number of classes or predictions
+    device: device on which prediction performed (either CPU or GPU)
+
+  Returns:
+    top_ps: top probabilities
+    top_classes: top classes or predictions
+  """
+
+  img_tensor = torch.from_numpy(image).type(torch.FloatTensor).to(device)
+  img_tensor = img_tensor.unsqueeze(dim=0)
+
+
+  model.to(device)
+  with torch.no_grad():
+    ps = model.forward(img_tensor)
+    probs = np.exp(ps)
+
+    top_ps, top_classes = probs.topk(topk, dim=1)
+    top_ps = top_ps.numpy().tolist()[0]
+    top_classes = top_classes.numpy().tolist()[0]
+
+    idx_to_class = {model.class_to_idx[k]: k for k in model.class_to_idx}
+    top_classes = [idx_to_class[x] for x in top_classes]
+
+    return top_ps, top_classes
+
